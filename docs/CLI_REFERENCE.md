@@ -98,6 +98,56 @@ loraforge train \
 
 ---
 
+### `loraforge presets`
+
+Lists turnkey fine-tuning task presets (reasoning, coding, agentic, chat) with recommended models and hyperparameters.
+
+```bash
+loraforge presets
+```
+
+---
+
+### `loraforge init`
+
+Initializes a reproducible fine-tuning job YAML configuration from a task preset.
+
+```bash
+loraforge init --preset reasoning --gpu rtx-4090-24gb --out loraforge.yaml
+```
+
+---
+
+### `loraforge cloud`
+
+Generates a containerized deployment bundle (CUDA 12.4 Dockerfile and entrypoint script) for RunPod or Vast.ai.
+
+```bash
+loraforge cloud --model meta-llama/Llama-3.1-8B-Instruct --gpu rtx-4090-24gb --out ./cloud_deploy --provider runpod
+```
+
+---
+
+### `loraforge data clean`
+
+Sanitizes dataset files: removes exact duplicates via SHA-256 fingerprinting, strips invisible control characters, and prunes degenerate single-turn samples.
+
+```bash
+loraforge data clean dataset.jsonl --output cleaned.jsonl --format sharegpt
+```
+
+---
+
+### `loraforge data preview`
+
+Previews formatted prompts rendered with foundation model chat templates (Llama 3, ChatML, Mistral, DeepSeek-R1, Gemma 2, Phi 3).
+
+```bash
+loraforge data preview dataset.jsonl --template llama3 --samples 2
+```
+
+---
+
 ### `loraforge export`
 
 Consolidates adapters and produces deployment manifests for InferOps.
@@ -118,3 +168,4 @@ Launches the FastAPI control plane and responsive Web Dashboard.
 ```bash
 loraforge serve --host 127.0.0.1 --port 8765
 ```
+

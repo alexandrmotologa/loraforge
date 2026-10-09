@@ -26,6 +26,17 @@
       <div class="panel-title">Training Configuration</div>
 
       <div class="field">
+        <label for="presetSelect">Task Preset</label>
+        <select id="presetSelect">
+          <option value="custom">-- Custom Configuration --</option>
+          <option value="reasoning">Reasoning & CoT (DeepSeek-R1)</option>
+          <option value="coding">Software Engineering (Coding)</option>
+          <option value="agentic">Agentic & Function Calling</option>
+          <option value="chat">Conversational & Instruction</option>
+        </select>
+      </div>
+
+      <div class="field">
         <label for="modelSelect">Base Model Architecture</label>
         <select id="modelSelect"></select>
       </div>
@@ -33,6 +44,28 @@
       <div class="field">
         <label for="gpuSelect">Target GPU Accelerator</label>
         <select id="gpuSelect"></select>
+      </div>
+
+      <div class="field" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+        <div>
+          <label for="gpuCountSelect">GPU Count</label>
+          <select id="gpuCountSelect">
+            <option value="1" selected>1x GPU</option>
+            <option value="2">2x GPUs</option>
+            <option value="4">4x GPUs</option>
+            <option value="8">8x GPUs</option>
+          </select>
+        </div>
+        <div>
+          <label for="strategySelect">Sharding</label>
+          <select id="strategySelect">
+            <option value="none" selected>None (Single)</option>
+            <option value="ddp">DDP</option>
+            <option value="zero_1">ZeRO-1 (Opt)</option>
+            <option value="zero_2">ZeRO-2 (Opt+Grad)</option>
+            <option value="zero_3">ZeRO-3 (Full Shard)</option>
+          </select>
+        </div>
       </div>
 
       <div class="field">
@@ -88,6 +121,15 @@
       <button id="btnAutoTune" class="btn-primary" style="background: linear-gradient(135deg, #4f46e5, #7c3aed);">
         ⚡ Auto-Tune for Target GPU
       </button>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.25rem;">
+        <button id="btnDownloadYaml" class="btn-primary" style="background: var(--bg-input); border: 1px solid var(--border); font-size: 0.75rem; padding: 0.5rem;">
+          📥 Download YAML
+        </button>
+        <button id="btnCloudExport" class="btn-primary" style="background: var(--bg-input); border: 1px solid var(--border); font-size: 0.75rem; padding: 0.5rem;">
+          ☁️ Cloud Package
+        </button>
+      </div>
     </aside>
 
     <!-- Main Analytics & Supervisor View -->
@@ -95,9 +137,10 @@
       <!-- Status Hero -->
       <div class="card status-card">
         <div class="status-info">
-          <p>Predicted Peak VRAM Consumption</p>
+          <p>Predicted Peak VRAM Consumption (Per GPU)</p>
           <h2 id="peakVramDisplay">-- MB</h2>
           <p>Physical Capacity: <span id="totalVramDisplay" style="color: var(--text-main);">-- MB</span> | Safe Headroom: <span id="headroomDisplay" style="color: var(--success);">-- MB</span></p>
+          <p id="clusterVramDisplay" style="font-size: 0.75rem; color: #a855f7; margin-top: 0.2rem;"></p>
         </div>
         <div>
           <span id="statusBadge" class="status-tag status-optimal">EVALUATING</span>
@@ -115,6 +158,7 @@
           <div class="legend-item"><span class="legend-dot" style="background: #ec4899;"></span> Gradients</div>
           <div class="legend-item"><span class="legend-dot" style="background: #f59e0b;"></span> Optimizer</div>
           <div class="legend-item"><span class="legend-dot" style="background: #06b6d4;"></span> Activations</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #14b8a6;"></span> Comm Buffer</div>
           <div class="legend-item"><span class="legend-dot" style="background: #64748b;"></span> CUDA Context</div>
           <div class="legend-item"><span class="legend-dot" style="background: #475569;"></span> Allocator Buffer</div>
         </div>
@@ -143,7 +187,14 @@
             <h3 style="font-size: 0.9375rem; font-weight: 600;">Live Training Supervisor</h3>
             <p id="trainingStepText" style="color: var(--text-muted); font-size: 0.8125rem; margin-top: 0.2rem;">Idle - Ready to launch fine-tuning run.</p>
           </div>
-          <button id="btnStartTrain" class="btn-primary">▶ Launch Supervised Run</button>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <span id="pplBadge" style="display: none; font-size: 0.75rem; background: rgba(16, 185, 129, 0.2); color: #10b981; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 600;">PPL: --</span>
+            <button id="btnStartTrain" class="btn-primary">▶ Launch Supervised Run</button>
+          </div>
+        </div>
+        <div style="display: flex; gap: 1rem; margin-top: 0.75rem; font-size: 0.75rem;">
+          <span style="color: #38bdf8;">■ Train Loss</span>
+          <span style="color: #10b981;">■ Validation Loss (Perplexity)</span>
         </div>
         <canvas id="lossChart"></canvas>
       </div>

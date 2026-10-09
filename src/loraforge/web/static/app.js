@@ -2,6 +2,7 @@
 const state = {
   models: {},
   gpus: {},
+  presets: {},
   activeReport: null,
   lossHistory: [],
   ws: null,
@@ -16,14 +17,16 @@ async function init() {
 
 async function loadOptions() {
   try {
-    const [modelsRes, hwRes] = await Promise.all([
+    const [modelsRes, hwRes, presetsRes] = await Promise.all([
       fetch('/api/models'),
       fetch('/api/hardware'),
+      fetch('/api/presets'),
     ]);
 
     state.models = await modelsRes.json();
     const hwData = await hwRes.json();
     state.gpus = hwData.presets;
+    state.presets = await presetsRes.json();
 
     const modelSelect = document.getElementById('modelSelect');
     modelSelect.innerHTML = '';
@@ -49,9 +52,9 @@ async function loadOptions() {
 
 function setupEventListeners() {
   const inputs = [
-    'modelSelect', 'gpuSelect', 'seqLenSlider', 'batchSizeSlider',
-    'gradAccSlider', 'rankSlider', 'quantSelect', 'optSelect',
-    'gradCkptCheck', 'flashAttnCheck'
+    'modelSelect', 'gpuSelect', 'gpuCountSelect', 'strategySelect',
+    'seqLenSlider', 'batchSizeSlider', 'gradAccSlider', 'rankSlider',
+    'quantSelect', 'optSelect', 'gradCkptCheck', 'flashAttnCheck'
   ];
 
   inputs.forEach(id => {
@@ -63,9 +66,29 @@ function setupEventListeners() {
     });
   });
 
+  document.getElementById('presetSelect').addEventListener('change', (e) => {
+    const pKey = e.target.value;
+    if (state.presets[pKey]) {
+      const p = state.presets[pKey];
+      if (document.getElementById('modelSelect').querySelector(`option[value="${p.recommended_model}"]`)) {
+        document.getElementById('modelSelect').value = p.recommended_model;
+      }
+      document.getElementById('seqLenSlider').value = p.training.max_seq_length;
+      document.getElementById('batchSizeSlider').value = p.training.per_device_train_batch_size;
+      document.getElementById('gradAccSlider').value = p.training.gradient_accumulation_steps;
+      document.getElementById('rankSlider').value = p.lora.r;
+      document.getElementById('quantSelect').value = p.quantization.quant_type;
+      document.getElementById('optSelect').value = p.training.optimizer;
+      syncLabels();
+      triggerEstimate();
+    }
+  });
+
   document.getElementById('btnAutoTune').addEventListener('click', runAutoTune);
   document.getElementById('btnStartTrain').addEventListener('click', launchTrainingJob);
   document.getElementById('btnExportInferOps').addEventListener('click', exportToInferOps);
+  document.getElementById('btnDownloadYaml').addEventListener('click', downloadYamlConfig);
+  document.getElementById('btnCloudExport').addEventListener('click', exportCloudPackage);
 }
 
 function syncLabels() {
@@ -75,10 +98,12 @@ function syncLabels() {
   document.getElementById('rankVal').textContent = document.getElementById('rankSlider').value;
 }
 
-async function triggerEstimate() {
-  const payload = {
+function getPayload() {
+  return {
     model_name: document.getElementById('modelSelect').value,
     gpu_name: document.getElementById('gpuSelect').value,
+    num_gpus: parseInt(document.getElementById('gpuCountSelect').value),
+    distributed_strategy: document.getElementById('strategySelect').value,
     seq_len: parseInt(document.getElementById('seqLenSlider').value),
     batch_size: parseInt(document.getElementById('batchSizeSlider').value),
     grad_acc: parseInt(document.getElementById('gradAccSlider').value),
@@ -88,7 +113,10 @@ async function triggerEstimate() {
     gradient_checkpointing: document.getElementById('gradCkptCheck').checked,
     flash_attention: document.getElementById('flashAttnCheck').checked,
   };
+}
 
+async function triggerEstimate() {
+  const payload = getPayload();
   try {
     const res = await fetch('/api/vram/estimate', {
       method: 'POST',
@@ -105,7 +133,7 @@ async function triggerEstimate() {
 }
 
 function renderReport(report) {
-  // 1. Feasibility badge
+  // 1. Feasibility badge & hero
   const badge = document.getElementById('statusBadge');
   badge.textContent = report.status;
   badge.className = 'status-tag status-' + report.status.toLowerCase().replace('_', '-');
@@ -113,6 +141,13 @@ function renderReport(report) {
   document.getElementById('peakVramDisplay').textContent = `${report.peak_vram_mb.toFixed(1)} MB`;
   document.getElementById('totalVramDisplay').textContent = `${report.total_gpu_vram_mb} MB`;
   document.getElementById('headroomDisplay').textContent = `${report.headroom_mb.toFixed(1)} MB (${(100 - report.utilization_percentage).toFixed(1)}% free)`;
+
+  if (report.num_gpus > 1) {
+    document.getElementById('clusterVramDisplay').textContent =
+      `Topology: ${report.num_gpus}x GPUs (${report.distributed_strategy.toUpperCase()}) | Cluster VRAM: ${report.total_cluster_vram_mb} MB | Global Batch: ${report.effective_batch_size}`;
+  } else {
+    document.getElementById('clusterVramDisplay').textContent = `Single GPU | Effective Batch: ${report.effective_batch_size}`;
+  }
 
   // 2. Stacked Bar Chart
   const bd = report.breakdown;
@@ -126,12 +161,14 @@ function renderReport(report) {
     { key: 'grad', val: bd.gradients_mb, color: '#ec4899' },
     { key: 'opt', val: bd.optimizer_states_mb, color: '#f59e0b' },
     { key: 'act', val: bd.activations_mb, color: '#06b6d4' },
+    { key: 'comm', val: bd.communication_buffers_mb, color: '#14b8a6' },
     { key: 'frag', val: bd.fragmentation_buffer_mb, color: '#475569' },
   ];
 
   const barContainer = document.getElementById('stackedBar');
   barContainer.innerHTML = '';
   barSegments.forEach(s => {
+    if (s.val <= 0) return;
     const seg = document.createElement('div');
     seg.className = 'bar-segment';
     const pct = (s.val / total) * 100;
@@ -150,6 +187,7 @@ function renderReport(report) {
     <tr><td>Gradient Tensors</td><td>Trainable parameters only</td><td class="numeric">${bd.gradients_mb.toFixed(1)} MB</td></tr>
     <tr><td>Optimizer States</td><td>Moments & Master states</td><td class="numeric">${bd.optimizer_states_mb.toFixed(1)} MB</td></tr>
     <tr><td>Activation Memory</td><td>Forward stashed + intra-block recomputation</td><td class="numeric">${bd.activations_mb.toFixed(1)} MB</td></tr>
+    <tr><td>Communication Rings</td><td>Multi-GPU AllReduce & gathering buffers</td><td class="numeric">${bd.communication_buffers_mb.toFixed(1)} MB</td></tr>
     <tr><td>CUDA Context</td><td>Driver baseline overhead</td><td class="numeric">${bd.cuda_context_mb.toFixed(1)} MB</td></tr>
     <tr><td>Allocator Headroom</td><td>PyTorch memory fragmentation</td><td class="numeric">${bd.fragmentation_buffer_mb.toFixed(1)} MB</td></tr>
   `;
@@ -233,7 +271,20 @@ function setupWebSocket() {
   state.ws.onmessage = (event) => {
     const metric = JSON.parse(event.data);
     state.lossHistory.push(metric);
-    document.getElementById('trainingStepText').textContent = `Step ${metric.step} | Loss: ${metric.loss.toFixed(4)} | VRAM: ${metric.vram_used_mb.toFixed(1)} MB`;
+
+    let statusText = `Step ${metric.step} | Loss: ${metric.loss.toFixed(4)}`;
+    if (metric.val_loss !== null && metric.val_loss !== undefined) {
+      statusText += ` | Val Loss: ${metric.val_loss.toFixed(4)}`;
+    }
+    statusText += ` | VRAM: ${metric.vram_used_mb.toFixed(1)} MB`;
+    document.getElementById('trainingStepText').textContent = statusText;
+
+    if (metric.perplexity !== null && metric.perplexity !== undefined) {
+      const pplBadge = document.getElementById('pplBadge');
+      pplBadge.style.display = 'inline-block';
+      pplBadge.textContent = `PPL: ${metric.perplexity.toFixed(2)}`;
+    }
+
     drawLossChart();
 
     if (metric.step >= 40) {
@@ -277,10 +328,10 @@ function drawLossChart() {
   const minLoss = 0.0;
   const steps = state.lossHistory.length;
 
+  // 1. Draw Train Loss (Cyan)
   ctx.strokeStyle = '#38bdf8';
   ctx.lineWidth = 2.5;
   ctx.beginPath();
-
   state.lossHistory.forEach((pt, i) => {
     const x = 40 + (i / (steps - 1)) * (w - 70);
     const y = (h - 30) - ((pt.loss - minLoss) / (maxLoss - minLoss)) * (h - 50);
@@ -288,6 +339,40 @@ function drawLossChart() {
     else ctx.lineTo(x, y);
   });
   ctx.stroke();
+
+  // 2. Draw Val Loss (Emerald)
+  const valPoints = state.lossHistory.filter(pt => pt.val_loss !== null && pt.val_loss !== undefined);
+  if (valPoints.length > 0) {
+    ctx.strokeStyle = '#10b981';
+    ctx.fillStyle = '#10b981';
+    ctx.lineWidth = 2.0;
+    ctx.beginPath();
+    let first = true;
+    state.lossHistory.forEach((pt, i) => {
+      if (pt.val_loss !== null && pt.val_loss !== undefined) {
+        const x = 40 + (i / (steps - 1)) * (w - 70);
+        const y = (h - 30) - ((pt.val_loss - minLoss) / (maxLoss - minLoss)) * (h - 50);
+        if (first) {
+          ctx.moveTo(x, y);
+          first = false;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+    });
+    ctx.stroke();
+
+    // Draw dots for validation evaluations
+    state.lossHistory.forEach((pt, i) => {
+      if (pt.val_loss !== null && pt.val_loss !== undefined) {
+        const x = 40 + (i / (steps - 1)) * (w - 70);
+        const y = (h - 30) - ((pt.val_loss - minLoss) / (maxLoss - minLoss)) * (h - 50);
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+  }
 }
 
 async function exportToInferOps() {
@@ -310,6 +395,42 @@ async function exportToInferOps() {
     document.getElementById('inferopsExportCard').style.display = 'block';
   } catch (err) {
     console.error('Export failed:', err);
+  }
+}
+
+async function downloadYamlConfig() {
+  const payload = getPayload();
+  try {
+    const res = await fetch('/api/config/yaml', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    const blob = new Blob([data.yaml], { type: 'text/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'loraforge.yaml';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('Failed to download YAML:', err);
+  }
+}
+
+async function exportCloudPackage() {
+  const payload = getPayload();
+  try {
+    const res = await fetch('/api/export/cloud', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const pkg = await res.json();
+    alert(`Cloud package generated in ${pkg.dockerfile_path}`);
+  } catch (err) {
+    console.error('Failed to export cloud package:', err);
   }
 }
 

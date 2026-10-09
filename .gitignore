@@ -45,11 +45,12 @@ htmlcov/
 .coverage.*
 
 # LoRAForge data, checkpoints, exports, models
-models/
-checkpoints/
-data/
-exports/
-runs/
+/models/
+/checkpoints/
+/data/
+/exports/
+/runs/
+/cloud_deploy/
 *.safetensors
 *.gguf
 *.bin

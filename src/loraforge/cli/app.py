@@ -219,6 +219,57 @@ def estimate_vram(
     console.print()
 
 
+@app.command("presets")
+def list_presets() -> None:
+    """List available turnkey task presets for specialized fine-tuning."""
+    from loraforge.core.presets import PRESETS
+
+    table = Table(title="Turnkey Fine-Tuning Task Presets", show_header=True)
+    table.add_column("Preset", style="bold cyan")
+    table.add_column("Default Model", style="dim")
+    table.add_column("Rank / Alpha", justify="center")
+    table.add_column("SeqLen", justify="right")
+    table.add_column("Description")
+
+    for k, p in PRESETS.items():
+        table.add_row(
+            k,
+            p.recommended_model.split("/")[-1],
+            f"r={p.lora.r} / α={p.lora.lora_alpha}",
+            f"{p.training.max_seq_length} toks",
+            p.description,
+        )
+
+    console.print(table)
+
+
+@app.command("init")
+def init_project(
+    preset: str = typer.Option("chat", "--preset", "-p", help="Task preset: reasoning, coding, agentic, chat."),
+    gpu: str = typer.Option("rtx-3060-12gb", "--gpu", "-g", help="Target GPU preset."),
+    dataset: str = typer.Option("train.jsonl", "--dataset", "-d", help="Path to training dataset."),
+    out: str = typer.Option("loraforge.yaml", "--out", "-o", help="Output configuration file."),
+) -> None:
+    """Initialize a reproducible fine-tuning project configuration from a preset."""
+    from loraforge.core.presets import build_config_from_preset
+
+    cfg = build_config_from_preset(preset_name=preset, gpu_name=gpu, dataset_path=dataset)
+    target = Path(out)
+    cfg.save_yaml(target)
+
+    console.print(Panel(
+        f"[bold green]Created fine-tuning configuration:[/bold green] [underline]{target.resolve()}[/underline]\n\n"
+        f"[bold]Task Preset:[/bold] {preset}\n"
+        f"[bold]Base Model:[/bold] {cfg.model.name}\n"
+        f"[bold]Target GPU:[/bold] {cfg.gpu.name} ({cfg.gpu.total_vram_mb} MB)\n"
+        f"[bold]LoRA Rank / Alpha:[/bold] r={cfg.lora.r}, alpha={cfg.lora.lora_alpha}\n"
+        f"[bold]Max Sequence Length:[/bold] {cfg.training.max_seq_length} tokens\n\n"
+        f"[dim]Next step: review VRAM budget with 'loraforge vram' or run 'loraforge train'.[/dim]",
+        title="Project Initialization Wizard",
+        border_style="green",
+    ))
+
+
 @app.command("autotune")
 def autotune_config(
     model: str = typer.Option("meta-llama/Llama-3.1-8B-Instruct", "--model", "-m"),
@@ -380,6 +431,63 @@ def audit_dataset(
             console.print(f"  • {w}")
 
 
+@data_app.command("clean")
+def clean_dataset(
+    path: str = typer.Argument(..., help="Path to input dataset file."),
+    output: str = typer.Option(..., "--output", "-o", help="Path to write sanitized JSONL dataset."),
+    fmt: str = typer.Option("sharegpt", "--format", "-f", help="Format: sharegpt, alpaca, chatml, openai_messages."),
+) -> None:
+    """Sanitize dataset: remove duplicates, strip invisible control characters, and prune empty turns."""
+    from loraforge.data.cleaner import DatasetCleaner
+
+    in_file = Path(path)
+    if not in_file.is_file():
+        console.print(f"[bold red]Error:[/bold red] File not found: {path}")
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold cyan]Sanitizing dataset:[/bold cyan] {in_file.name}...")
+    report = DatasetCleaner.clean(in_file, output, fmt=DatasetFormat(fmt))
+
+    table = Table(title="Dataset Sanitization Summary", show_header=True)
+    table.add_column("Metric", style="dim")
+    table.add_column("Count / Value", style="bold cyan")
+
+    table.add_row("Total Input Samples", f"{report.total_input_samples:,}")
+    table.add_row("Retained High-Quality Samples", f"{report.retained_samples:,} ({report.retention_rate_pct:.1f}%)")
+    table.add_row("Duplicate Samples Dropped", f"{report.duplicate_samples_dropped:,}")
+    table.add_row("Degenerate / Single-Turn Dropped", f"{report.degenerate_samples_dropped:,}")
+    table.add_row("Whitespace-Trimmed Turns", f"{report.whitespace_trimmed_turns:,}")
+    table.add_row("Sanitized Output File", report.output_path)
+
+    console.print(table)
+
+
+@data_app.command("preview")
+def preview_dataset_template(
+    path: str = typer.Argument(..., help="Path to input dataset file."),
+    template: str = typer.Option("llama3", "--template", "-t", help="Template: llama3, chatml, mistral, deepseek, gemma2, phi3."),
+    samples: int = typer.Option(1, "--samples", "-n", help="Number of samples to preview."),
+    fmt: str = typer.Option("sharegpt", "--format", "-f", help="Input format."),
+) -> None:
+    """Preview formatted prompt using a foundation model chat template."""
+    from loraforge.data.templates import get_template
+
+    in_file = Path(path)
+    if not in_file.is_file():
+        console.print(f"[bold red]Error:[/bold red] File not found: {path}")
+        raise typer.Exit(code=1)
+
+    tmpl = get_template(template)
+    if not tmpl:
+        console.print(f"[bold red]Error:[/bold red] Unknown template '{template}'.")
+        raise typer.Exit(code=1)
+
+    loaded = DatasetParser.load_jsonl(in_file, DatasetFormat(fmt), max_samples=samples)
+    for idx, sample in enumerate(loaded, 1):
+        formatted = tmpl.format(sample)
+        console.print(Panel(formatted, title=f"Sample #{idx} [{tmpl.name.upper()}]", border_style="cyan"))
+
+
 @app.command("train")
 def train_job(
     model: str = typer.Option("meta-llama/Llama-3.1-8B-Instruct", "--model", "-m"),
@@ -420,6 +528,8 @@ def export_job(
     model: str = typer.Option("meta-llama/Llama-3.1-8B-Instruct", "--model", "-m"),
     output_dir: str = typer.Option("./exports/llama3-loraforge", "--out", "-o"),
     engine: str = typer.Option("vllm", "--engine", "-e", help="InferOps engine: vllm, sglang, or llama-cpp."),
+    deploy: bool = typer.Option(False, "--deploy", "-d", help="Directly dispatch model registration to running InferOps server."),
+    inferops_url: str = typer.Option("http://127.0.0.1:8000", "--inferops-url", help="InferOps server base URL."),
 ) -> None:
     """Generate InferOps deployment manifest and adapter merge blueprint."""
     model_spec = get_model_spec(model)
@@ -433,14 +543,56 @@ def export_job(
     )
 
     manifest_path = InferOpsExporter.export_bundle(cfg, output_dir, engine=engine)
+
+    deploy_status_msg = ""
+    if deploy:
+        result = InferOpsExporter.deploy_to_server(manifest_path, inferops_url=inferops_url)
+        if result.get("status") == "deployed_live":
+            deploy_status_msg = f"\n[bold green]✓ Live Dispatched to InferOps:[/bold green] registered on {inferops_url}"
+        else:
+            deploy_status_msg = f"\n[bold yellow]! InferOps server not active at {inferops_url}[/bold yellow] (ready for launch via script)"
+
     console.print(Panel(
         f"[bold green]InferOps Service Manifest Exported Successfully![/bold green]\n\n"
         f"[bold]Manifest Path:[/bold] {manifest_path.resolve()}\n"
-        f"[bold]Target Engine:[/bold] {engine}\n\n"
+        f"[bold]Target Engine:[/bold] {engine}{deploy_status_msg}\n\n"
         f"[bold]To launch in InferOps:[/bold]\n"
         f"[cyan]inferops serve --manifest {manifest_path} --engine {engine} --port 8000[/cyan]",
         title="InferOps Integration Bridge",
         border_style="green",
+    ))
+
+
+@app.command("cloud")
+def export_cloud(
+    model: str = typer.Option("meta-llama/Llama-3.1-8B-Instruct", "--model", "-m"),
+    gpu: str = typer.Option("rtx-4090-24gb", "--gpu", "-g"),
+    output_dir: str = typer.Option("./cloud_deploy", "--out", "-o"),
+    provider: str = typer.Option("runpod", "--provider", "-p", help="Target cloud provider: runpod, vastai."),
+) -> None:
+    """Generate turnkey Dockerfile and bootstrap entrypoint for RunPod / Vast.ai GPUs."""
+    from loraforge.export.cloud import CloudDeploymentGenerator
+
+    model_spec = get_model_spec(model)
+    gpu_spec = get_gpu_preset(gpu)
+
+    cfg = FineTuningJobConfig(
+        job_name=f"cloud-{model_spec.name.split('/')[-1].lower()}",
+        model=model_spec,
+        gpu=gpu_spec,
+        dataset=DatasetConfig(path="dataset.jsonl", format=DatasetFormat.SHAREGPT),
+    )
+
+    pkg = CloudDeploymentGenerator.generate(cfg, output_dir, provider=provider)
+    console.print(Panel(
+        f"[bold green]Cloud GPU Deployment Package Created![/bold green]\n\n"
+        f"• [bold]Target Cloud Provider:[/bold] {pkg.provider.upper()}\n"
+        f"• [bold]Dockerfile:[/bold] {pkg.dockerfile_path}\n"
+        f"• [bold]Bootstrap Entrypoint:[/bold] {pkg.entrypoint_script_path}\n"
+        f"• [bold]Training Config:[/bold] {pkg.config_yaml_path}\n\n"
+        f"[dim]Build & launch container: 'docker build -t loraforge-runner {output_dir}'[/dim]",
+        title="Cloud Cluster Exporter",
+        border_style="cyan",
     ))
 
 

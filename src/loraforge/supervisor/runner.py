@@ -7,6 +7,7 @@ and saves LoRA adapter artifacts.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -46,6 +47,10 @@ class JobState(BaseModel):
     total_steps: int = 0
     current_epoch: float = 0.0
     latest_loss: Optional[float] = None
+    best_val_loss: Optional[float] = None
+    best_step: Optional[int] = None
+    latest_perplexity: Optional[float] = None
+    early_stopped: bool = False
     peak_vram_recorded_mb: float = 0.0
     error_message: Optional[str] = None
     output_checkpoint_dir: str = ""
@@ -155,6 +160,12 @@ if __name__ == "__main__":
         self._stop_flags[job_id] = False
 
         start_time = time.time()
+        best_val = float("inf")
+        patience_counter = 0
+        eval_interval = max(1, config.training.eval_steps)
+        patience_limit = config.training.early_stopping_patience or 3
+        min_delta = config.training.early_stopping_threshold
+
         for step in range(1, total_steps + 1):
             if self._stop_flags.get(job_id, False):
                 state.status = JobStatus.CANCELLED
@@ -165,10 +176,36 @@ if __name__ == "__main__":
             sim_lr = round(config.training.learning_rate * max(0.1, 1.0 - (step / total_steps)), 7)
             sim_vram = round(report.peak_vram_mb * (0.92 + (step / total_steps) * 0.08), 1)
 
+            # Check if this is an evaluation step
+            is_eval_step = (step % eval_interval == 0) or (step == total_steps)
+            val_loss = None
+            ppl = None
+            is_best = False
+
+            if is_eval_step:
+                # Synthetic realistic validation curve
+                val_loss = round(sim_loss + 0.08 + (0.02 * (step / total_steps) if step > total_steps * 0.8 else 0.0), 4)
+                ppl = round(math.exp(val_loss), 2)
+
+                if (best_val - val_loss) > min_delta:
+                    best_val = val_loss
+                    patience_counter = 0
+                    is_best = True
+                    state.best_val_loss = val_loss
+                    state.best_step = step
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience_limit:
+                        # Early-stopping trip
+                        state.early_stopped = True
+
             metric = StepMetrics(
                 step=step,
                 epoch=round((step / total_steps) * config.training.num_train_epochs, 2),
                 loss=sim_loss,
+                val_loss=val_loss,
+                perplexity=ppl,
+                is_best_checkpoint=is_best,
                 learning_rate=sim_lr,
                 grad_norm=0.75,
                 tokens_per_second=2400.0,
@@ -181,7 +218,12 @@ if __name__ == "__main__":
             state.current_step = step
             state.current_epoch = metric.epoch
             state.latest_loss = sim_loss
+            if ppl is not None:
+                state.latest_perplexity = ppl
             state.peak_vram_recorded_mb = max(state.peak_vram_recorded_mb, sim_vram)
+
+            if state.early_stopped:
+                break
 
             if step_delay > 0:
                 time.sleep(step_delay)

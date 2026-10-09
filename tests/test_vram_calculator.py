@@ -173,3 +173,50 @@ def test_hyperparameter_optimizer_autotune(llama3_8b_spec, rtx_3060_spec):
     assert rec.optimal_micro_batch_size >= 1
     assert rec.recommended_quantization == QuantizationType.NF4
     assert rec.headroom_mb > 0
+
+def test_multi_gpu_sharding_zero3(llama3_8b_spec, rtx_3060_spec, default_lora_config, qlora_nf4_config):
+    from loraforge.core.config import DistributedStrategy
+
+    calc = VRAMCalculator()
+
+    # 1. Single GPU baseline
+    t_single = TrainingConfig(
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=8,
+        num_gpus=1,
+        distributed_strategy=DistributedStrategy.NONE,
+    )
+    rep_single = calc.estimate(llama3_8b_spec, default_lora_config, qlora_nf4_config, t_single, rtx_3060_spec)
+
+    # 2. Dual GPU ZeRO-3
+    t_zero3 = TrainingConfig(
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=8,
+        num_gpus=2,
+        distributed_strategy=DistributedStrategy.ZERO_3,
+    )
+    rep_zero3 = calc.estimate(llama3_8b_spec, default_lora_config, qlora_nf4_config, t_zero3, rtx_3060_spec)
+
+    # In ZeRO-3, base model weights per GPU should be roughly cut in half!
+    assert rep_zero3.breakdown.base_model_weights_mb < rep_single.breakdown.base_model_weights_mb * 0.60
+    assert rep_zero3.breakdown.optimizer_states_mb < rep_single.breakdown.optimizer_states_mb * 0.60
+    assert rep_zero3.breakdown.gradients_mb < rep_single.breakdown.gradients_mb * 0.60
+    assert rep_zero3.effective_batch_size == 16  # 1 * 8 * 2
+    assert rep_zero3.total_cluster_vram_mb == 24576
+
+
+def test_multi_gpu_ddp_comm_buffers(llama3_8b_spec, rtx_3060_spec, default_lora_config, qlora_nf4_config):
+    from loraforge.core.config import DistributedStrategy
+
+    calc = VRAMCalculator()
+    t_ddp = TrainingConfig(
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=8,
+        num_gpus=4,
+        distributed_strategy=DistributedStrategy.DDP,
+    )
+    rep_ddp = calc.estimate(llama3_8b_spec, default_lora_config, qlora_nf4_config, t_ddp, rtx_3060_spec)
+
+    assert rep_ddp.breakdown.communication_buffers_mb > 0
+    assert rep_ddp.num_gpus == 4
+    assert rep_ddp.effective_batch_size == 32

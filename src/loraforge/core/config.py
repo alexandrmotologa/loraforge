@@ -44,6 +44,17 @@ class AttentionImplementation(str, Enum):
     EAGER = "eager"
 
 
+class DistributedStrategy(str, Enum):
+    """Distributed training and memory sharding strategies."""
+
+    NONE = "none"                # Single GPU execution
+    DDP = "ddp"                  # Standard DistributedDataParallel
+    FSDP_FULL_SHARD = "fsdp"     # PyTorch Fully Sharded Data Parallel
+    ZERO_1 = "zero_1"            # DeepSpeed ZeRO-1 (Optimizer state partitioning)
+    ZERO_2 = "zero_2"            # DeepSpeed ZeRO-2 (Optimizer + Gradient partitioning)
+    ZERO_3 = "zero_3"            # DeepSpeed ZeRO-3 (Full parameter, gradient, optimizer partitioning)
+
+
 class DatasetFormat(str, Enum):
     """Supported input dataset schema formats."""
 
@@ -240,11 +251,36 @@ class TrainingConfig(BaseModel):
         ge=0,
         description="Subprocess workers for data loading.",
     )
+    distributed_strategy: DistributedStrategy = Field(
+        default=DistributedStrategy.NONE,
+        description="Distributed parallelism and memory sharding strategy.",
+    )
+    num_gpus: int = Field(
+        default=1,
+        ge=1,
+        le=64,
+        description="Number of identical GPUs participating in the training run.",
+    )
+    eval_steps: int = Field(
+        default=25,
+        ge=1,
+        description="Frequency of evaluation steps on validation split.",
+    )
+    early_stopping_patience: Optional[int] = Field(
+        default=3,
+        ge=1,
+        description="Evaluation intervals without val_loss improvement before early termination.",
+    )
+    early_stopping_threshold: float = Field(
+        default=0.005,
+        ge=0.0,
+        description="Minimum reduction in val_loss required to qualify as improvement.",
+    )
 
     @property
     def effective_batch_size(self) -> int:
-        """Returns effective batch size (micro_batch * gradient_accumulation)."""
-        return self.per_device_train_batch_size * self.gradient_accumulation_steps
+        """Returns effective batch size (micro_batch * gradient_accumulation * num_gpus)."""
+        return self.per_device_train_batch_size * self.gradient_accumulation_steps * self.num_gpus
 
 
 class DatasetConfig(BaseModel):

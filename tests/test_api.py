@@ -111,3 +111,50 @@ def test_api_dashboard_html():
     assert res.status_code == 200
     assert "LoRAForge" in res.text
     assert "InferOps Companion" in res.text
+
+
+def test_api_error_branches():
+    # 1. Invalid GPU in estimate
+    res1 = client.post("/api/vram/estimate", json={
+        "model_name": "meta-llama/Llama-3.1-8B-Instruct",
+        "gpu_name": "invalid-gpu",
+    })
+    assert res1.status_code == 404
+
+    # 2. Invalid model in launch_job
+    res2 = client.post("/api/jobs", json={
+        "job_name": "err-job",
+        "model_name": "unknown-model",
+        "gpu_name": "rtx-3060-12gb",
+    })
+    assert res2.status_code == 404
+
+    # 3. Invalid GPU in launch_job
+    res3 = client.post("/api/jobs", json={
+        "job_name": "err-job",
+        "model_name": "meta-llama/Llama-3.1-8B-Instruct",
+        "gpu_name": "unknown-gpu",
+    })
+    assert res3.status_code == 404
+
+    # 4. Invalid model in export_inferops
+    res4 = client.post("/api/export/inferops", json={
+        "job_name": "err-job",
+        "model_name": "unknown-model",
+        "gpu_name": "rtx-3060-12gb",
+    })
+    assert res4.status_code == 404
+
+    # 5. Invalid GPU in export_inferops
+    res5 = client.post("/api/export/inferops", json={
+        "job_name": "err-job",
+        "model_name": "meta-llama/Llama-3.1-8B-Instruct",
+        "gpu_name": "unknown-gpu",
+    })
+    assert res5.status_code == 404
+
+
+def test_api_websocket_telemetry():
+    with client.websocket_connect("/ws/telemetry") as websocket:
+        assert websocket is not None
+

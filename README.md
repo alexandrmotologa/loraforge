@@ -39,11 +39,17 @@ LoRAForge provides analytical memory sizing before any tensors touch GPU memory,
 ## Capabilities
 
 - **Predictive VRAM Calculator**: Computes exact video memory requirements before training starts. Models base weights (4-bit NF4 with Double Quantization, 8-bit, 16-bit), LoRA adapter decomposition matrices across all attention and MLP projections, gradient buffers, optimizer states (`paged_adamw_8bit`, `adamw_8bit`, `adamw_torch`, `lion_8bit`), and FlashAttention-2 activation memory under gradient checkpointing.
+- **Multi-GPU Distributed Sharding**: Models tensor memory under DDP, ZeRO-1 ($M_{\text{opt}} / N$), ZeRO-2 ($(M_{\text{opt}} + M_{\text{grad}}) / N$), and ZeRO-3 / FSDP ($M_{\text{base}} / N$, $M_{\text{lora}} / N$, $M_{\text{opt}} / N$, $M_{\text{grad}} / N$ with single-layer gathering buffers).
+- **Turnkey Task Presets**: Ready-to-train hyperparameter recipes for mathematical reasoning (DeepSeek-R1 CoT style), code generation, agentic tool use, and general dialogue.
+- **Dataset Sanitizer & Deduplication**: Cleans web-scraped or synthetic datasets by stripping invisible control characters, dropping duplicate turns via SHA-256 fingerprinting, and filtering degenerate single-turn samples.
+- **Conversational Chat Templates**: Native special-token formatters for Meta Llama 3, ChatML (Qwen, Hermes), Mistral, DeepSeek-R1, Google Gemma 2, and Microsoft Phi 3.
+- **Cloud Deployment Generator**: Creates production CUDA 12.4 Dockerfile definitions and bootstrap entrypoints for RunPod and Vast.ai cloud GPU instances.
 - **Hardware Telemetry & Arch Detection**: Probes NVIDIA GPUs via NVML and CUDA runtime. Detects compute capability, Tensor Core generation, FlashAttention-2 compatibility, and physical headroom. Includes reference presets for remote workstation planning.
 - **Sequence Multi-Packing**: First-Fit Decreasing (FFD) bin packing groups short dialogue samples into fixed `max_seq_length` blocks with reset position IDs and cumulative length attention boundaries, eliminating padding waste.
 - **Process Supervisor & Watchdog**: Tracks VRAM growth rate ($dV/dt$) and halts or warns before an unrecoverable CUDA out-of-memory driver crash occurs.
 - **InferOps Integration**: Exports merged Safetensors (FP16/BF16) or GGUF quantization plans alongside native InferOps service definitions (`inferops_manifest.yaml`) for instant multi-engine serving.
 - **Typer CLI & Web Control Plane**: Run interactive CLI audits or monitor loss curves and parameter sweeps through a local FastAPI dashboard on port 8765.
+
 
 ## Installation
 
@@ -95,19 +101,30 @@ Example output:
 └──────────────────────────────────┴──────────────────────────────────┴─────────────────┴─────────────┘
 ```
 
-### 2. Auto-Tune Hyperparameters for a Specific GPU
+### 2. Initialize Project From a Task Preset
+
+```bash
+# Available presets: reasoning, coding, agentic, chat
+loraforge init --preset reasoning --gpu rtx-4090-24gb --out loraforge.yaml
+```
+
+### 3. Auto-Tune Hyperparameters for a Specific GPU
 
 ```bash
 loraforge autotune --model meta-llama/Llama-3.1-8B-Instruct --gpu rtx-3060-12gb
 ```
 
-### 3. Audit Dataset Token Lengths and Packing
+### 4. Clean, Deduplicate, and Audit Dataset
 
 ```bash
-loraforge data audit dataset.jsonl --format sharegpt --seq-len 2048
+# Strip control characters, drop duplicates, remove degenerate samples
+loraforge data clean raw_dataset.jsonl --output cleaned.jsonl --format sharegpt
+
+# Audit token length distribution and sequence packing efficiency
+loraforge data audit cleaned.jsonl --format sharegpt --seq-len 2048
 ```
 
-### 4. Supervise a Fine-Tuning Run
+### 5. Supervise a Fine-Tuning Run
 
 ```bash
 loraforge train \
@@ -117,13 +134,21 @@ loraforge train \
   --dry-run
 ```
 
-### 5. Export to InferOps
+### 6. Export to InferOps or Cloud GPUs
 
 ```bash
+# Export InferOps multi-engine deployment manifest
 loraforge export \
   --model meta-llama/Llama-3.1-8B-Instruct \
   --out ./exports/llama3-custom \
   --engine vllm
+
+# Generate RunPod or Vast.ai CUDA 12.4 container deployment package
+loraforge cloud \
+  --model meta-llama/Llama-3.1-8B-Instruct \
+  --gpu rtx-4090-24gb \
+  --out ./cloud_deploy \
+  --provider runpod
 ```
 
 Launch directly in InferOps:
@@ -131,7 +156,7 @@ Launch directly in InferOps:
 inferops serve --manifest ./exports/llama3-custom/inferops_manifest.yaml --engine vllm --port 8000
 ```
 
-### 6. Start the Web Control Plane
+### 7. Start the Web Control Plane
 
 ```bash
 loraforge serve --host 127.0.0.1 --port 8765

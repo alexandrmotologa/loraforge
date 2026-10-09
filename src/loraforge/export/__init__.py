@@ -1,5 +1,9 @@
 """Model consolidation, GGUF conversion, and InferOps bridge exports."""
 
+from loraforge.export.cloud import (
+    CloudDeploymentGenerator,
+    CloudExportPackage,
+)
 from loraforge.export.gguf import (
     GGUFExporter,
     GGUFQuantizationPlan,
@@ -20,4 +24,6 @@ __all__ = [
     "GGUFQuantizationPlan",
     "InferOpsExporter",
     "InferOpsModelManifest",
+    "CloudDeploymentGenerator",
+    "CloudExportPackage",
 ]

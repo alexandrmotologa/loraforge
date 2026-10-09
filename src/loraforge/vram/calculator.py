@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from loraforge.core.config import (
     AttentionImplementation,
+    DistributedStrategy,
     GPUSpec,
     LoRAConfig,
     ModelArchitectureSpec,
@@ -59,13 +60,17 @@ class VRAMBreakdown(BaseModel):
     activations_mb: float = Field(
         description="Forward pass stashed activations and peak intra-block backward tensors.",
     )
+    communication_buffers_mb: float = Field(
+        default=0.0,
+        description="Inter-GPU communication rings and AllReduce / AllGather working buffers.",
+    )
     fragmentation_buffer_mb: float = Field(
         description="Headroom reserved for PyTorch caching allocator fragmentation.",
     )
 
     @property
     def total_peak_mb(self) -> float:
-        """Total estimated peak VRAM consumption."""
+        """Total estimated peak VRAM consumption per GPU."""
         return round(
             self.cuda_context_mb
             + self.base_model_weights_mb
@@ -74,6 +79,7 @@ class VRAMBreakdown(BaseModel):
             + self.gradients_mb
             + self.optimizer_states_mb
             + self.activations_mb
+            + self.communication_buffers_mb
             + self.fragmentation_buffer_mb,
             2,
         )
@@ -84,8 +90,12 @@ class VRAMEstimateReport(BaseModel):
 
     model_name: str
     gpu_name: str
+    num_gpus: int = Field(default=1, description="Number of GPUs in the training topology.")
+    distributed_strategy: str = Field(default="none", description="Memory sharding strategy applied.")
+    effective_batch_size: int = Field(default=8, description="Global effective batch size.")
     total_gpu_vram_mb: int
     usable_gpu_vram_mb: float
+    total_cluster_vram_mb: int = Field(default=12288, description="Combined physical VRAM across all GPUs.")
     breakdown: VRAMBreakdown
     lora_parameters: LoRAParameterBreakdown
     peak_vram_mb: float
@@ -395,9 +405,45 @@ class VRAMCalculator:
         activations_mb = self.calculate_activation_memory(model, training)
         cuda_context_mb = self.calculate_cuda_context_overhead(gpu)
 
-        # Dynamic fragmentation buffer (12% of activations + gradients)
+        # Multi-GPU Sharding & Parallelism adjustments
+        n_gpus = max(1, training.num_gpus)
+        strat = training.distributed_strategy
+        comm_buffers_mb = 0.0
+
+        if n_gpus > 1:
+            if strat == DistributedStrategy.DDP:
+                # DDP: Model, LoRA, and Optimizer duplicated on each GPU
+                # Ring AllReduce gradient communication buffer
+                comm_buffers_mb = round(gradients_mb * 2.0, 2)
+
+            elif strat == DistributedStrategy.ZERO_1:
+                # ZeRO-1: Optimizer states sharded across N GPUs
+                optimizer_mb = round(optimizer_mb / n_gpus, 2)
+                comm_buffers_mb = round(gradients_mb * 1.5, 2)
+
+            elif strat == DistributedStrategy.ZERO_2:
+                # ZeRO-2: Optimizer states and gradients sharded across N GPUs
+                optimizer_mb = round(optimizer_mb / n_gpus, 2)
+                gradients_mb = round(gradients_mb / n_gpus, 2)
+                comm_buffers_mb = round(gradients_mb * 1.5, 2)
+
+            elif strat in (DistributedStrategy.ZERO_3, DistributedStrategy.FSDP_FULL_SHARD):
+                # ZeRO-3 / FSDP: Parameters, gradients, and optimizer states sharded across N GPUs
+                base_weights_mb = round(base_weights_mb / n_gpus, 2)
+                quant_meta_mb = round(quant_meta_mb / n_gpus, 2)
+                lora_weights_mb = round(lora_weights_mb / n_gpus, 2)
+                gradients_mb = round(gradients_mb / n_gpus, 2)
+                optimizer_mb = round(optimizer_mb / n_gpus, 2)
+                # Single-layer unsharded gathering buffer during forward/backward execution
+                unsharded_layer_mb = round(
+                    ((base_weights_mb * n_gpus) + (lora_weights_mb * n_gpus)) / max(1, model.num_layers),
+                    2,
+                )
+                comm_buffers_mb = unsharded_layer_mb
+
+        # Dynamic fragmentation buffer (12% of activations + gradients + comm buffers)
         frag_mb = round(
-            (activations_mb + gradients_mb + lora_weights_mb) * self.FRAGMENTATION_COEFFICIENT,
+            (activations_mb + gradients_mb + lora_weights_mb + comm_buffers_mb) * self.FRAGMENTATION_COEFFICIENT,
             2,
         )
 
@@ -409,12 +455,14 @@ class VRAMCalculator:
             gradients_mb=gradients_mb,
             optimizer_states_mb=optimizer_mb,
             activations_mb=activations_mb,
+            communication_buffers_mb=comm_buffers_mb,
             fragmentation_buffer_mb=frag_mb,
         )
 
         peak_mb = breakdown.total_peak_mb
         total_gpu_mb = gpu.total_vram_mb
         usable_gpu_mb = gpu.usable_vram_mb
+        total_cluster_mb = total_gpu_mb * n_gpus
         headroom_mb = round(total_gpu_mb - peak_mb, 2)
         util_pct = round((peak_mb / total_gpu_mb) * 100.0, 1)
 
@@ -483,8 +531,12 @@ class VRAMCalculator:
         return VRAMEstimateReport(
             model_name=model.name,
             gpu_name=gpu.name,
+            num_gpus=n_gpus,
+            distributed_strategy=strat.value,
+            effective_batch_size=training.effective_batch_size,
             total_gpu_vram_mb=total_gpu_mb,
             usable_gpu_vram_mb=usable_gpu_mb,
+            total_cluster_vram_mb=total_cluster_mb,
             breakdown=breakdown,
             lora_parameters=lora_breakdown,
             peak_vram_mb=peak_mb,

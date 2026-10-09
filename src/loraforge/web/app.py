@@ -17,6 +17,7 @@ from loraforge.core.config import (
     AttentionImplementation,
     DatasetConfig,
     DatasetFormat,
+    DistributedStrategy,
     ExportConfig,
     FineTuningJobConfig,
     GPUSpec,
@@ -34,6 +35,9 @@ from loraforge.core.hardware import (
     get_gpu_preset,
 )
 from loraforge.core.models import PRESET_MODELS, get_model_spec
+from loraforge.core.presets import PRESETS
+from loraforge.data.cleaner import DatasetCleaner
+from loraforge.export.cloud import CloudDeploymentGenerator
 from loraforge.export.inferops import InferOpsExporter
 from loraforge.supervisor.runner import JobState, TrainingSupervisor
 from loraforge.supervisor.telemetry import StepMetrics
@@ -44,6 +48,8 @@ from loraforge.vram.optimizer import HyperparameterOptimizer, OptimizationRecomm
 class EstimateRequest(BaseModel):
     model_name: str = "meta-llama/Llama-3.1-8B-Instruct"
     gpu_name: str = "rtx-3060-12gb"
+    num_gpus: int = 1
+    distributed_strategy: str = "none"
     seq_len: int = 2048
     batch_size: int = 1
     grad_acc: int = 8
@@ -131,6 +137,10 @@ def create_app() -> FastAPI:
     async def get_models():
         return {k: v.model_dump() for k, v in PRESET_MODELS.items()}
 
+    @app.get("/api/presets")
+    async def get_presets():
+        return {k: v.model_dump() for k, v in PRESETS.items()}
+
     @app.post("/api/vram/estimate", response_model=VRAMEstimateReport)
     async def estimate_vram(req: EstimateRequest):
         model_spec = get_model_spec(req.model_name)
@@ -150,12 +160,51 @@ def create_app() -> FastAPI:
             per_device_train_batch_size=req.batch_size,
             gradient_accumulation_steps=req.grad_acc,
             max_seq_length=req.seq_len,
+            num_gpus=req.num_gpus,
+            distributed_strategy=DistributedStrategy(req.distributed_strategy),
             optimizer=OptimizerType(req.optimizer),
             attention_impl=AttentionImplementation.FLASH_ATTENTION_2 if req.flash_attention else AttentionImplementation.SDPA,
             gradient_checkpointing=req.gradient_checkpointing,
         )
 
         return calc.estimate(model_spec, lora_cfg, quant_cfg, training_cfg, gpu_spec)
+
+    @app.post("/api/config/yaml")
+    async def generate_yaml_config(req: EstimateRequest):
+        model_spec = get_model_spec(req.model_name) or PRESET_MODELS["meta-llama/Llama-3.1-8B-Instruct"]
+        gpu_spec = get_gpu_preset(req.gpu_name) or PRESET_GPUS["rtx-3060-12gb"]
+
+        cfg = FineTuningJobConfig(
+            job_name="loraforge-experiment",
+            model=model_spec,
+            lora=LoRAConfig(r=req.rank, lora_alpha=req.rank * 2),
+            quantization=QuantizationConfig(quant_type=QuantizationType(req.quant)),
+            training=TrainingConfig(
+                per_device_train_batch_size=req.batch_size,
+                gradient_accumulation_steps=req.grad_acc,
+                max_seq_length=req.seq_len,
+                num_gpus=req.num_gpus,
+                distributed_strategy=DistributedStrategy(req.distributed_strategy),
+                optimizer=OptimizerType(req.optimizer),
+            ),
+            gpu=gpu_spec,
+            dataset=DatasetConfig(path="dataset.jsonl", format=DatasetFormat.SHAREGPT),
+        )
+        return {"yaml": cfg.to_yaml()}
+
+    @app.post("/api/export/cloud")
+    async def export_cloud_package(req: EstimateRequest):
+        model_spec = get_model_spec(req.model_name) or PRESET_MODELS["meta-llama/Llama-3.1-8B-Instruct"]
+        gpu_spec = get_gpu_preset(req.gpu_name) or PRESET_GPUS["rtx-3060-12gb"]
+
+        cfg = FineTuningJobConfig(
+            job_name="cloud-experiment",
+            model=model_spec,
+            gpu=gpu_spec,
+            dataset=DatasetConfig(path="dataset.jsonl", format=DatasetFormat.SHAREGPT),
+        )
+        pkg = CloudDeploymentGenerator.generate(cfg, "./cloud_deploy", provider="runpod")
+        return pkg.model_dump()
 
     @app.post("/api/vram/autotune", response_model=OptimizationRecommendation)
     async def autotune(req: AutoTuneRequest):

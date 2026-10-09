@@ -14,6 +14,9 @@ class StepMetrics(BaseModel):
     step: int
     epoch: float
     loss: float
+    val_loss: Optional[float] = None
+    perplexity: Optional[float] = None
+    is_best_checkpoint: bool = False
     learning_rate: float
     grad_norm: Optional[float] = None
     tokens_per_second: float = 0.0

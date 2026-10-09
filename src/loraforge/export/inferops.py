@@ -103,3 +103,41 @@ inferops serve ^
 """)
 
         return yaml_path
+
+
+    @classmethod
+    def deploy_to_server(
+        cls,
+        manifest_path: Path | str,
+        inferops_url: str = "http://127.0.0.1:8000",
+    ) -> Dict[str, Any]:
+        """Attempt zero-friction handoff to an active local InferOps service instance."""
+        import httpx
+
+        path = Path(manifest_path)
+        if not path.is_file():
+            return {"status": "error", "message": f"Manifest not found: {path}"}
+
+        with open(path, "r", encoding="utf-8") as f:
+            manifest_data = yaml.safe_load(f)
+
+        try:
+            with httpx.Client(timeout=3.0) as client:
+                health = client.get(f"{inferops_url}/api/health")
+                if health.status_code == 200:
+                    # Dispatch model registration
+                    reg = client.post(f"{inferops_url}/api/models", json=manifest_data)
+                    return {
+                        "status": "deployed_live",
+                        "server_url": inferops_url,
+                        "model_id": manifest_data.get("model_id"),
+                        "response_code": reg.status_code,
+                    }
+        except Exception:
+            pass
+
+        return {
+            "status": "offline_ready",
+            "message": "InferOps server not currently running at URL. Ready for launch via launcher script.",
+            "manifest_path": str(path.resolve()),
+        }
