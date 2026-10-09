@@ -596,6 +596,68 @@ def export_cloud(
     ))
 
 
+@app.command("merge")
+def merge_adapters(
+    adapters: str = typer.Option(..., "--adapters", "-a", help="Comma-separated paths to adapter folders or files."),
+    output_dir: str = typer.Option("./merged_adapters", "--out", "-o", help="Directory where merged adapter will be saved."),
+    method: str = typer.Option("ties", "--method", "-m", help="Merge method: linear, ties, dare, svd."),
+    density: float = typer.Option(0.2, "--density", help="Top-k density fraction kept for TIES trimming (0.01 - 1.0)."),
+    drop_rate: float = typer.Option(0.5, "--drop-rate", help="Bernoulli drop rate for DARE (0.0 - 0.99)."),
+    weights: Optional[str] = typer.Option(None, "--weights", "-w", help="Comma-separated floats for adapter blend weights."),
+    target_rank: Optional[int] = typer.Option(None, "--target-rank", "-r", help="Target rank for SVD truncation compression."),
+) -> None:
+    """Consolidate multiple LoRA adapters using TIES, DARE, SVD rank truncation, or Linear blending."""
+    from loraforge.export.merger import AdapterMerger, MergeMethod, MultiLoraMergeConfig
+
+    paths = [p.strip() for p in adapters.split(",") if p.strip()]
+    if not paths:
+        console.print("[bold red]Error:[/bold red] At least one adapter path must be provided.")
+        raise typer.Exit(code=1)
+
+    parsed_weights = None
+    if weights:
+        try:
+            parsed_weights = [float(w.strip()) for w in weights.split(",") if w.strip()]
+        except ValueError:
+            console.print("[bold red]Error:[/bold red] Weights must be comma-separated numbers.")
+            raise typer.Exit(code=1)
+
+    try:
+        merge_method = MergeMethod(method.lower())
+    except ValueError:
+        console.print(f"[bold red]Error:[/bold red] Unsupported merge method '{method}'. Choose from: linear, ties, dare, svd.")
+        raise typer.Exit(code=1)
+
+    cfg = MultiLoraMergeConfig(
+        method=merge_method,
+        adapter_paths=paths,
+        weights=parsed_weights,
+        density=density,
+        drop_rate=drop_rate,
+        target_rank=target_rank,
+        output_dir=output_dir,
+    )
+
+    console.print(f"[bold cyan]Merging {len(paths)} adapters using {cfg.method.value.upper()}...[/bold cyan]")
+    report = AdapterMerger.merge_adapters_from_files(paths, cfg)
+
+    table = Table(title="Multi-LoRA Adapter Consolidation Summary", show_header=True)
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", style="bold cyan")
+
+    table.add_row("Algorithm", report.method.value.upper())
+    table.add_row("Adapters Merged", str(report.num_adapters))
+    table.add_row("Tensors Consolidated", str(report.tensors_merged))
+    table.add_row("Total Parameters", f"{report.total_parameters:,}")
+    table.add_row("Parameter Density / Retention", f"{report.density * 100.0:.1f}%")
+    if report.preserved_variance is not None:
+        table.add_row("Preserved SVD Variance", f"{report.preserved_variance * 100.0:.2f}%")
+    table.add_row("Output Safetensors", report.output_file)
+
+    console.print(table)
+    console.print(f"[bold green]✓ Ready for deployment in InferOps![/bold green]\n")
+
+
 @app.command("serve")
 def serve_dashboard(
     host: str = typer.Option("127.0.0.1", "--host", "-h", help="Bind host address."),

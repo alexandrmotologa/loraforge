@@ -13,11 +13,19 @@ from loraforge.export.inferops import (
     InferOpsModelManifest,
 )
 from loraforge.export.merger import (
+    AdapterMerger,
+    MergeMethod,
     MergePlan,
     ModelMerger,
+    MultiLoraMergeConfig,
+    MultiLoraMergeReport,
 )
 
 __all__ = [
+    "AdapterMerger",
+    "MergeMethod",
+    "MultiLoraMergeConfig",
+    "MultiLoraMergeReport",
     "ModelMerger",
     "MergePlan",
     "GGUFExporter",

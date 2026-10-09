@@ -218,6 +218,29 @@
           <pre id="inferopsCliCmd" class="code-block"></pre>
         </div>
       </div>
+
+      <!-- Multi-LoRA Adapter Merger (TIES / DARE / SVD) -->
+      <div class="card">
+        <h3 style="font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.5rem;">Multi-LoRA Adapter Fusion & Compression</h3>
+        <p style="color: var(--text-muted); font-size: 0.875rem; margin-bottom: 1rem;">
+          Consolidate multiple specialized LoRA adapters without parameter cancellation using TIES sign-election, DARE stochastic rescaling, or SVD rank truncation before deploying into InferOps.
+        </p>
+        <div style="display: grid; grid-template-columns: 2fr 1.2fr 0.8fr auto; gap: 0.75rem; align-items: center;">
+          <input type="text" id="mergeAdaptersInput" placeholder="e.g. ./runs/adapter_code, ./runs/adapter_math" style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text-main); padding: 0.5rem; border-radius: 6px; font-size: 0.8125rem;">
+          <select id="mergeMethodSelect" style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text-main); padding: 0.5rem; border-radius: 6px; font-size: 0.8125rem;">
+            <option value="ties" selected>TIES (NeurIPS 2023)</option>
+            <option value="dare">DARE (Rescaled Masking)</option>
+            <option value="svd">SVD Rank Truncation</option>
+            <option value="linear">Linear Interpolation</option>
+          </select>
+          <input type="number" id="mergeDensityInput" placeholder="Density: 0.2" min="0.05" max="1.0" step="0.05" value="0.2" title="Density (TIES) or Drop Rate (DARE)" style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text-main); padding: 0.5rem; border-radius: 6px; font-size: 0.8125rem;">
+          <button id="btnMergeAdapters" class="btn-primary" style="background: linear-gradient(135deg, #059669, #10b981);">Merge Adapters</button>
+        </div>
+        <div id="mergeResultCard" style="display: none; margin-top: 1rem;">
+          <p style="font-size: 0.8125rem; color: var(--success); font-weight: 600;" id="mergeResultSummary"></p>
+          <pre id="mergeCliCmd" class="code-block"></pre>
+        </div>
+      </div>
     </main>
   </div>
 

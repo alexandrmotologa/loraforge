@@ -47,6 +47,7 @@ LoRAForge provides analytical memory sizing before any tensors touch GPU memory,
 - **Hardware Telemetry & Arch Detection**: Probes NVIDIA GPUs via NVML and CUDA runtime. Detects compute capability, Tensor Core generation, FlashAttention-2 compatibility, and physical headroom. Includes reference presets for remote workstation planning.
 - **Sequence Multi-Packing**: First-Fit Decreasing (FFD) bin packing groups short dialogue samples into fixed `max_seq_length` blocks with reset position IDs and cumulative length attention boundaries, eliminating padding waste.
 - **Process Supervisor & Watchdog**: Tracks VRAM growth rate ($dV/dt$) and halts or warns before an unrecoverable CUDA out-of-memory driver crash occurs.
+- **Multi-LoRA Adapter Fusion**: Combines specialized LoRA adapters or compresses adapter rank using TIES sign-election (NeurIPS 2023), DARE stochastic drop-and-rescale, SVD rank truncation, and weighted linear interpolation.
 - **InferOps Integration**: Exports merged Safetensors (FP16/BF16) or GGUF quantization plans alongside native InferOps service definitions (`inferops_manifest.yaml`) for instant multi-engine serving.
 - **Typer CLI & Web Control Plane**: Run interactive CLI audits or monitor loss curves and parameter sweeps through a local FastAPI dashboard on port 8765.
 
@@ -156,7 +157,25 @@ Launch directly in InferOps:
 inferops serve --manifest ./exports/llama3-custom/inferops_manifest.yaml --engine vllm --port 8000
 ```
 
-### 7. Start the Web Control Plane
+### 7. Fuse Multiple Adapters (TIES / DARE / SVD)
+
+```bash
+# Combine specialized coding and reasoning adapters using TIES sign-election
+loraforge merge \
+  --adapters ./runs/coding_lora,./runs/reasoning_lora \
+  --out ./merged_adapters \
+  --method ties \
+  --density 0.2
+
+# Or compress a rank-64 adapter down to rank-16 via SVD rank truncation
+loraforge merge \
+  --adapters ./runs/large_lora \
+  --out ./compressed_adapter \
+  --method svd \
+  --target-rank 16
+```
+
+### 8. Start the Web Control Plane
 
 ```bash
 loraforge serve --host 127.0.0.1 --port 8765

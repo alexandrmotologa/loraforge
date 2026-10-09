@@ -39,6 +39,7 @@ from loraforge.core.presets import PRESETS
 from loraforge.data.cleaner import DatasetCleaner
 from loraforge.export.cloud import CloudDeploymentGenerator
 from loraforge.export.inferops import InferOpsExporter
+from loraforge.export.merger import AdapterMerger, MergeMethod, MultiLoraMergeConfig, MultiLoraMergeReport
 from loraforge.supervisor.runner import JobState, TrainingSupervisor
 from loraforge.supervisor.telemetry import StepMetrics
 from loraforge.vram.calculator import VRAMCalculator, VRAMEstimateReport
@@ -86,6 +87,17 @@ class ExportInferOpsRequest(BaseModel):
     gpu_name: str = "rtx-3060-12gb"
     engine: str = "vllm"
     output_dir: str = "./exports/inferops-model"
+
+
+class MergeAdaptersRequest(BaseModel):
+    adapter_paths: List[str]
+    output_dir: str = "./merged_adapters"
+    method: str = "ties"
+    density: float = 0.2
+    drop_rate: float = 0.5
+    weights: Optional[List[float]] = None
+    target_rank: Optional[int] = None
+
 
 
 def create_app() -> FastAPI:
@@ -303,6 +315,32 @@ def create_app() -> FastAPI:
             "engine": req.engine,
             "inferops_command": f"inferops serve --manifest {manifest_path.resolve()} --engine {req.engine} --port 8000",
         }
+
+    @app.post("/api/export/merge", response_model=MultiLoraMergeReport)
+    async def merge_lora_adapters(req: MergeAdaptersRequest):
+        try:
+            method = MergeMethod(req.method.lower())
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Unsupported merge method '{req.method}'.")
+
+        if not req.adapter_paths:
+            raise HTTPException(status_code=400, detail="At least one adapter path must be provided.")
+
+        cfg = MultiLoraMergeConfig(
+            method=method,
+            adapter_paths=req.adapter_paths,
+            weights=req.weights,
+            density=req.density,
+            drop_rate=req.drop_rate,
+            target_rank=req.target_rank,
+            output_dir=req.output_dir,
+        )
+
+        try:
+            report = AdapterMerger.merge_adapters_from_files(req.adapter_paths, cfg)
+            return report
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     @app.websocket("/ws/telemetry")
     async def websocket_telemetry(websocket: WebSocket):

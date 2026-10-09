@@ -89,6 +89,7 @@ function setupEventListeners() {
   document.getElementById('btnExportInferOps').addEventListener('click', exportToInferOps);
   document.getElementById('btnDownloadYaml').addEventListener('click', downloadYamlConfig);
   document.getElementById('btnCloudExport').addEventListener('click', exportCloudPackage);
+  document.getElementById('btnMergeAdapters')?.addEventListener('click', mergeAdapters);
 }
 
 function syncLabels() {
@@ -431,6 +432,52 @@ async function exportCloudPackage() {
     alert(`Cloud package generated in ${pkg.dockerfile_path}`);
   } catch (err) {
     console.error('Failed to export cloud package:', err);
+  }
+}
+
+async function mergeAdapters() {
+  const inputStr = document.getElementById('mergeAdaptersInput').value;
+  const paths = inputStr.split(',').map(s => s.trim()).filter(Boolean);
+  if (paths.length === 0) {
+    alert('Please enter at least one adapter path (e.g. ./runs/adapter_code, ./runs/adapter_math)');
+    return;
+  }
+
+  const method = document.getElementById('mergeMethodSelect').value;
+  const density = parseFloat(document.getElementById('mergeDensityInput').value) || 0.2;
+
+  const btn = document.getElementById('btnMergeAdapters');
+  btn.disabled = true;
+  btn.textContent = 'Merging...';
+
+  try {
+    const res = await fetch('/api/export/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        adapter_paths: paths,
+        method: method,
+        density: density,
+        drop_rate: Math.max(0.0, 1.0 - density),
+        target_rank: 16,
+        output_dir: './merged_adapters',
+      }),
+    });
+    const report = await res.json();
+    if (!res.ok) {
+      alert(`Merge error: ${report.detail || 'Failed to merge'}`);
+      return;
+    }
+    document.getElementById('mergeResultSummary').textContent = report.summary;
+    document.getElementById('mergeCliCmd').textContent =
+      `# Ready for InferOps serving!\ninferops serve --manifest ${report.output_file} --engine vllm --port 8000`;
+    document.getElementById('mergeResultCard').style.display = 'block';
+  } catch (err) {
+    console.error('Failed to merge adapters:', err);
+    alert('Merge request failed.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Merge Adapters';
   }
 }
 

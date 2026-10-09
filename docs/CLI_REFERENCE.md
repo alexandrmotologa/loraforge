@@ -148,6 +148,35 @@ loraforge data preview dataset.jsonl --template llama3 --samples 2
 
 ---
 
+### `loraforge merge`
+
+Fuses multiple specialized LoRA adapters or compresses adapter rank using TIES, DARE, SVD rank truncation, or Linear interpolation:
+
+```bash
+# TIES merging across two specialized adapters
+loraforge merge \
+  --adapters ./runs/coding_lora,./runs/reasoning_lora \
+  --out ./merged_adapters \
+  --method ties \
+  --density 0.2
+
+# DARE stochastic drop-and-rescale
+loraforge merge \
+  --adapters ./runs/adapter_a,./runs/adapter_b \
+  --out ./merged_adapters \
+  --method dare \
+  --drop-rate 0.5
+
+# SVD rank truncation (compress rank 64 to rank 16)
+loraforge merge \
+  --adapters ./runs/heavy_lora \
+  --out ./compressed_adapter \
+  --method svd \
+  --target-rank 16
+```
+
+---
+
 ### `loraforge export`
 
 Consolidates adapters and produces deployment manifests for InferOps.
