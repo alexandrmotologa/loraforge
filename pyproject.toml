@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loraforge"
+version = "0.1.0"
+description = "Bare-metal local fine-tuning control plane and QLoRA supervisor for consumer and workstation GPUs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+    { name = "Alexandr Motologa", email = "alexandrmotologa@users.noreply.github.com" }
+]
+keywords = [
+    "qlora",
+    "lora",
+    "fine-tuning",
+    "llm",
+    "vram-calculator",
+    "inferops",
+    "pytorch",
+    "fastapi",
+    "typer"
+]
+dependencies = [
+    "pydantic>=2.5.0",
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.28.0",
+    "pyyaml>=6.0.1",
+    "httpx>=0.27.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0"
+]
+training = [
+    "torch>=2.2.0",
+    "transformers>=4.40.0",
+    "peft>=0.10.0",
+    "bitsandbytes>=0.43.0",
+    "accelerate>=0.29.0",
+    "trl>=0.8.0",
+    "datasets>=2.18.0"
+]
+
+[project.scripts]
+loraforge = "loraforge.cli.app:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

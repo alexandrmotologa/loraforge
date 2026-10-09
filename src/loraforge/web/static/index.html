@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoRAForge Control Plane - QLoRA Supervisor & VRAM Budgeting</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="logo-group">
+      <h1>LoRAForge</h1>
+      <span class="badge">QLoRA Supervisor</span>
+      <span class="badge" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border-color: rgba(168, 85, 247, 0.3);">InferOps Companion</span>
+    </div>
+    <div class="header-links">
+      <a href="/docs" target="_blank">API Docs</a>
+      <a href="https://github.com/alexandrmotologa/loraforge" target="_blank">GitHub</a>
+      <a href="https://github.com/alexandrmotologa/inferops" target="_blank">InferOps</a>
+    </div>
+  </header>
+
+  <div class="main-container">
+    <!-- Configuration Panel -->
+    <aside class="control-panel">
+      <div class="panel-title">Training Configuration</div>
+
+      <div class="field">
+        <label for="modelSelect">Base Model Architecture</label>
+        <select id="modelSelect"></select>
+      </div>
+
+      <div class="field">
+        <label for="gpuSelect">Target GPU Accelerator</label>
+        <select id="gpuSelect"></select>
+      </div>
+
+      <div class="field">
+        <label>Sequence Length: <span id="seqLenVal" style="color: var(--primary);">2048</span></label>
+        <input type="range" id="seqLenSlider" min="512" max="16384" step="256" value="2048">
+      </div>
+
+      <div class="field">
+        <label>Micro-Batch Size: <span id="batchSizeVal" style="color: var(--primary);">1</span></label>
+        <input type="range" id="batchSizeSlider" min="1" max="16" step="1" value="1">
+      </div>
+
+      <div class="field">
+        <label>Gradient Accumulation: <span id="gradAccVal" style="color: var(--primary);">8</span></label>
+        <input type="range" id="gradAccSlider" min="1" max="64" step="1" value="8">
+      </div>
+
+      <div class="field">
+        <label>LoRA Rank (r): <span id="rankVal" style="color: var(--primary);">16</span></label>
+        <input type="range" id="rankSlider" min="4" max="128" step="4" value="16">
+      </div>
+
+      <div class="field">
+        <label for="quantSelect">Quantization Scheme</label>
+        <select id="quantSelect">
+          <option value="nf4" selected>4-bit NF4 (QLoRA standard)</option>
+          <option value="fp4">4-bit FP4</option>
+          <option value="int8">8-bit Int8</option>
+          <option value="none">16-bit Full (FP16/BF16)</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="optSelect">Optimizer Implementation</label>
+        <select id="optSelect">
+          <option value="paged_adamw_8bit" selected>Paged 8-bit AdamW (Safe)</option>
+          <option value="adamw_8bit">Standard 8-bit AdamW</option>
+          <option value="lion_8bit">8-bit Lion</option>
+          <option value="adamw_torch">FP32 AdamW (Torch standard)</option>
+        </select>
+      </div>
+
+      <div class="toggle-row">
+        <label for="gradCkptCheck" style="font-size: 0.8125rem;">Gradient Checkpointing</label>
+        <input type="checkbox" id="gradCkptCheck" checked>
+      </div>
+
+      <div class="toggle-row">
+        <label for="flashAttnCheck" style="font-size: 0.8125rem;">FlashAttention-2</label>
+        <input type="checkbox" id="flashAttnCheck" checked>
+      </div>
+
+      <button id="btnAutoTune" class="btn-primary" style="background: linear-gradient(135deg, #4f46e5, #7c3aed);">
+        ⚡ Auto-Tune for Target GPU
+      </button>
+    </aside>
+
+    <!-- Main Analytics & Supervisor View -->
+    <main class="dashboard-view">
+      <!-- Status Hero -->
+      <div class="card status-card">
+        <div class="status-info">
+          <p>Predicted Peak VRAM Consumption</p>
+          <h2 id="peakVramDisplay">-- MB</h2>
+          <p>Physical Capacity: <span id="totalVramDisplay" style="color: var(--text-main);">-- MB</span> | Safe Headroom: <span id="headroomDisplay" style="color: var(--success);">-- MB</span></p>
+        </div>
+        <div>
+          <span id="statusBadge" class="status-tag status-optimal">EVALUATING</span>
+        </div>
+      </div>
+
+      <!-- Memory Stacked Bar -->
+      <div class="card">
+        <h3 style="font-size: 0.9375rem; font-weight: 600;">HBM Memory Allocation Profile</h3>
+        <div class="bar-container" id="stackedBar"></div>
+        <div class="legend-grid">
+          <div class="legend-item"><span class="legend-dot" style="background: #3b82f6;"></span> Base Weights</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #6366f1;"></span> Quant Metadata</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #a855f7;"></span> LoRA Adapters</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #ec4899;"></span> Gradients</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #f59e0b;"></span> Optimizer</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #06b6d4;"></span> Activations</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #64748b;"></span> CUDA Context</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #475569;"></span> Allocator Buffer</div>
+        </div>
+
+        <table class="breakdown-table">
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Formula / Allocation Source</th>
+              <th style="text-align: right;">Size (MB)</th>
+            </tr>
+          </thead>
+          <tbody id="breakdownTableBody"></tbody>
+        </table>
+
+        <div style="margin-top: 1.25rem;">
+          <h4 style="font-size: 0.8125rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem;">Advisor Notes:</h4>
+          <ul id="recommendationList" style="padding-left: 1.25rem; font-size: 0.875rem; color: #f59e0b; line-height: 1.5;"></ul>
+        </div>
+      </div>
+
+      <!-- Live Training Supervisor -->
+      <div class="card">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <div>
+            <h3 style="font-size: 0.9375rem; font-weight: 600;">Live Training Supervisor</h3>
+            <p id="trainingStepText" style="color: var(--text-muted); font-size: 0.8125rem; margin-top: 0.2rem;">Idle - Ready to launch fine-tuning run.</p>
+          </div>
+          <button id="btnStartTrain" class="btn-primary">▶ Launch Supervised Run</button>
+        </div>
+        <canvas id="lossChart"></canvas>
+      </div>
+
+      <!-- InferOps Export Bridge -->
+      <div class="card">
+        <h3 style="font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.5rem;">Export to InferOps</h3>
+        <p style="color: var(--text-muted); font-size: 0.875rem; margin-bottom: 1rem;">
+          Generate native InferOps service definitions, engine configs (vLLM, SGLang, or llama.cpp), and scale-to-zero configurations for serving.
+        </p>
+        <div style="display: flex; gap: 0.75rem; align-items: center;">
+          <select id="inferopsEngineSelect" style="background: var(--bg-input); border: 1px solid var(--border); color: var(--text-main); padding: 0.5rem; border-radius: 6px;">
+            <option value="vllm" selected>Engine: vLLM (High Throughput)</option>
+            <option value="sglang">Engine: SGLang (Fast Structured)</option>
+            <option value="llama-cpp">Engine: llama.cpp (GGUF Consumer)</option>
+          </select>
+          <button id="btnExportInferOps" class="btn-primary">Generate InferOps Manifest</button>
+        </div>
+        <div id="inferopsExportCard" style="display: none; margin-top: 1rem;">
+          <p style="font-size: 0.8125rem; color: var(--success); font-weight: 600;">Manifest generated! Run this command in terminal to serve in InferOps:</p>
+          <pre id="inferopsCliCmd" class="code-block"></pre>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

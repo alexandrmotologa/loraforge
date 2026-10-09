@@ -1,0 +1,63 @@
+"""Core domain schemas, hardware interfaces, error types, and model registry."""
+
+from loraforge.core.config import (
+    AttentionImplementation,
+    DatasetConfig,
+    DatasetFormat,
+    ExportConfig,
+    ExportTarget,
+    FineTuningJobConfig,
+    GPUSpec,
+    LoRAConfig,
+    ModelArchitectureSpec,
+    OptimizerType,
+    QuantizationConfig,
+    QuantizationType,
+    TrainingConfig,
+)
+from loraforge.core.errors import (
+    DatasetValidationError,
+    ExportError,
+    HardwareIncompatibleError,
+    LoRAForgeError,
+    OOMRiskError,
+    SupervisorError,
+)
+from loraforge.core.hardware import (
+    GPUTelemetrySnapshot,
+    PRESET_GPUS,
+    detect_system_gpus,
+    get_current_telemetry,
+    get_gpu_preset,
+)
+from loraforge.core.models import PRESET_MODELS, get_model_spec, parse_huggingface_config
+
+__all__ = [
+    "QuantizationType",
+    "OptimizerType",
+    "AttentionImplementation",
+    "DatasetFormat",
+    "ExportTarget",
+    "QuantizationConfig",
+    "LoRAConfig",
+    "TrainingConfig",
+    "DatasetConfig",
+    "ModelArchitectureSpec",
+    "GPUSpec",
+    "ExportConfig",
+    "FineTuningJobConfig",
+    "LoRAForgeError",
+    "HardwareIncompatibleError",
+    "OOMRiskError",
+    "DatasetValidationError",
+    "SupervisorError",
+    "ExportError",
+    "PRESET_GPUS",
+    "get_gpu_preset",
+    "detect_system_gpus",
+    "get_current_telemetry",
+    "GPUTelemetrySnapshot",
+    "PRESET_MODELS",
+    "get_model_spec",
+    "parse_huggingface_config",
+]
