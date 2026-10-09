@@ -41,7 +41,7 @@ from loraforge.core.models import PRESET_MODELS, get_model_spec
 from loraforge.data.formats import DatasetParser
 from loraforge.data.validator import DatasetValidator
 from loraforge.export.inferops import InferOpsExporter
-from loraforge.supervisor.runner import TrainingSupervisor
+from loraforge.supervisor.runner import JobStatus, TrainingSupervisor
 from loraforge.vram.calculator import VRAMCalculator
 from loraforge.vram.optimizer import HyperparameterOptimizer
 
@@ -492,23 +492,33 @@ def preview_dataset_template(
 def train_job(
     model: str = typer.Option("meta-llama/Llama-3.1-8B-Instruct", "--model", "-m"),
     gpu: str = typer.Option("rtx-3060-12gb", "--gpu", "-g"),
-    steps: int = typer.Option(25, "--steps", help="Training steps for verification."),
-    dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Run simulated supervisor loop."),
+    dataset: str = typer.Option("data/train.jsonl", "--dataset", "-d", help="Path to JSONL dataset file."),
+    fmt: str = typer.Option("sharegpt", "--format", "-f", help="Format: sharegpt, alpaca, chatml, openai_messages."),
+    config_file: Optional[str] = typer.Option(None, "--config", "-c", help="Path to loraforge.yaml config file."),
+    steps: int = typer.Option(25, "--steps", help="Training steps."),
+    dry_run: bool = typer.Option(False, "--dry-run/--no-dry-run", help="Run simulated supervisor loop instead of bare-metal subprocess."),
 ) -> None:
     """Launch a supervised fine-tuning run with real-time telemetry."""
-    model_spec = get_model_spec(model)
-    gpu_spec = get_gpu_preset(gpu)
+    if config_file:
+        cfg_path = Path(config_file)
+        if not cfg_path.is_file():
+            console.print(f"[bold red]Error:[/bold red] Configuration file not found: {config_file}")
+            raise typer.Exit(code=1)
+        cfg = FineTuningJobConfig.from_yaml(cfg_path.read_text(encoding="utf-8"))
+    else:
+        model_spec = get_model_spec(model)
+        gpu_spec = get_gpu_preset(gpu)
 
-    if not model_spec or not gpu_spec:
-        console.print("[bold red]Invalid model or GPU specified.[/bold red]")
-        raise typer.Exit(code=1)
+        if not model_spec or not gpu_spec:
+            console.print("[bold red]Invalid model or GPU specified.[/bold red]")
+            raise typer.Exit(code=1)
 
-    cfg = FineTuningJobConfig(
-        job_name=f"ft-{model_spec.name.split('/')[-1].lower()}",
-        model=model_spec,
-        gpu=gpu_spec,
-        dataset=DatasetConfig(path="dummy_dataset.jsonl", format=DatasetFormat.SHAREGPT),
-    )
+        cfg = FineTuningJobConfig(
+            job_name=f"ft-{model_spec.name.split('/')[-1].lower()}",
+            model=model_spec,
+            gpu=gpu_spec,
+            dataset=DatasetConfig(path=dataset, format=DatasetFormat(fmt)),
+        )
 
     supervisor = TrainingSupervisor()
     console.print(f"[bold cyan]Launching fine-tuning supervisor for {cfg.job_name}...[/bold cyan]")
@@ -517,29 +527,48 @@ def train_job(
         console.print(f"  [Step {m.step:03d}/{steps}] loss: [bold yellow]{m.loss:.4f}[/bold yellow] | lr: {m.learning_rate:.2e} | vram: [cyan]{m.vram_used_mb:.1f} MB[/cyan]")
 
     supervisor.event_bus.subscribe(print_metric)
-    state = supervisor.run_dry_run_simulation(cfg, total_steps=steps, step_delay=0.03)
 
-    console.print(f"[bold green]Training {state.status.value.upper()}![/bold green] Peak VRAM: {state.peak_vram_recorded_mb:.1f} MB")
-    console.print(f"Adapter saved to: [underline]{state.output_checkpoint_dir}[/underline]")
+    if dry_run:
+        console.print("[dim]Mode: Dry-run simulation enabled.[/dim]")
+        state = supervisor.run_dry_run_simulation(cfg, total_steps=steps, step_delay=0.03)
+    else:
+        console.print("[bold green]Mode: Bare-metal PyTorch subprocess execution.[/bold green]")
+        state = supervisor.run_training_job(cfg, max_steps=steps)
+
+    if state.status == JobStatus.COMPLETED:
+        console.print(f"[bold green]Training COMPLETED![/bold green] Peak VRAM: {state.peak_vram_recorded_mb:.1f} MB")
+        console.print(f"Adapter saved to: [underline]{state.output_checkpoint_dir}[/underline]")
+    elif state.status == JobStatus.OOM_ABORTED:
+        console.print(f"[bold red]Training ABORTED (OOM Watchdog)![/bold red] {state.error_message}")
+        raise typer.Exit(code=2)
+    elif state.status == JobStatus.FAILED:
+        console.print(f"[bold red]Training FAILED![/bold red] {state.error_message}")
+        raise typer.Exit(code=1)
 
 
 @app.command("export")
 def export_job(
     model: str = typer.Option("meta-llama/Llama-3.1-8B-Instruct", "--model", "-m"),
+    gpu: str = typer.Option("rtx-3060-12gb", "--gpu", "-g"),
     output_dir: str = typer.Option("./exports/llama3-loraforge", "--out", "-o"),
     engine: str = typer.Option("vllm", "--engine", "-e", help="InferOps engine: vllm, sglang, or llama-cpp."),
     deploy: bool = typer.Option(False, "--deploy", "-d", help="Directly dispatch model registration to running InferOps server."),
     inferops_url: str = typer.Option("http://127.0.0.1:8000", "--inferops-url", help="InferOps server base URL."),
+    job_name: Optional[str] = typer.Option(None, "--job-name", "-j", help="Custom deployment job name."),
 ) -> None:
     """Generate InferOps deployment manifest and adapter merge blueprint."""
     model_spec = get_model_spec(model)
-    gpu_spec = get_gpu_preset("rtx-3060-12gb")
+    gpu_spec = get_gpu_preset(gpu)
+    if not model_spec or not gpu_spec:
+        console.print("[bold red]Invalid model or GPU specified.[/bold red]")
+        raise typer.Exit(code=1)
 
+    effective_name = job_name or f"deploy-{model_spec.name.split('/')[-1].lower()}"
     cfg = FineTuningJobConfig(
-        job_name="llama3-custom-agent",
+        job_name=effective_name,
         model=model_spec,
         gpu=gpu_spec,
-        dataset=DatasetConfig(path="data.jsonl", format=DatasetFormat.SHAREGPT),
+        dataset=DatasetConfig(path="train.jsonl", format=DatasetFormat.SHAREGPT),
     )
 
     manifest_path = InferOpsExporter.export_bundle(cfg, output_dir, engine=engine)

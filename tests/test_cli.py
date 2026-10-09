@@ -148,3 +148,59 @@ def test_cli_data_subcommands(tmp_path):
     assert preview_res.exit_code == 0
     assert "LLAMA3" in preview_res.output
 
+
+def test_cli_train_with_config_file(tmp_path):
+    from loraforge.core.presets import build_config_from_preset
+    cfg = build_config_from_preset("chat")
+    cfg_file = tmp_path / "loraforge_job.yaml"
+    cfg_file.write_text(cfg.to_yaml(), encoding="utf-8")
+
+    result = runner.invoke(app, [
+        "train",
+        "--config", str(cfg_file),
+        "--steps", "2",
+        "--dry-run",
+    ])
+    assert result.exit_code == 0
+    assert "Launching fine-tuning supervisor" in result.output
+    assert "Training COMPLETED" in result.output
+
+
+def test_cli_train_invalid_inputs(tmp_path):
+    # Non-existent config
+    res_bad_cfg = runner.invoke(app, ["train", "--config", str(tmp_path / "missing.yaml")])
+    assert res_bad_cfg.exit_code != 0
+    assert "Configuration file not found" in res_bad_cfg.output
+
+    # Invalid model
+    res_bad_model = runner.invoke(app, ["train", "--model", "nonexistent-model"])
+    assert res_bad_model.exit_code != 0
+    assert "Invalid model or GPU" in res_bad_model.output
+
+
+def test_cli_train_bare_metal_dispatch(monkeypatch):
+    from loraforge.supervisor.runner import JobState, JobStatus, TrainingSupervisor
+
+    def mock_run_training_job(self, config, max_steps=None):
+        return JobState(
+            job_id=config.job_id,
+            status=JobStatus.COMPLETED,
+            total_steps=max_steps or 2,
+            peak_vram_recorded_mb=5400.0,
+            output_checkpoint_dir="./test_ckpt",
+        )
+
+    monkeypatch.setattr(TrainingSupervisor, "run_training_job", mock_run_training_job)
+
+    result = runner.invoke(app, [
+        "train",
+        "--model", "meta-llama/Llama-3.1-8B-Instruct",
+        "--gpu", "rtx-3060-12gb",
+        "--no-dry-run",
+        "--steps", "2",
+    ])
+    assert result.exit_code == 0
+    assert "Bare-metal PyTorch subprocess execution" in result.output
+    assert "Training COMPLETED" in result.output
+
+

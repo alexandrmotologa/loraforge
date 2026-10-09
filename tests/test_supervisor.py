@@ -81,3 +81,104 @@ def test_training_supervisor_simulation(tmp_path, llama3_8b_spec, rtx_3060_spec)
     assert state.latest_loss is not None
     assert state.peak_vram_recorded_mb > 0
     assert (tmp_path / cfg.job_id / "checkpoints" / "adapter_config.json").is_file()
+
+
+def test_run_training_job_oom_preflight(tmp_path, rtx_3060_spec):
+    from loraforge.core.errors import OOMRiskError
+    from loraforge.core.models import PRESET_MODELS
+    supervisor = TrainingSupervisor(work_dir=str(tmp_path))
+
+    cfg = FineTuningJobConfig(
+        job_name="test-oom",
+        model=PRESET_MODELS["meta-llama/Llama-3.1-70B-Instruct"],
+        gpu=rtx_3060_spec,
+        dataset=DatasetConfig(path="dummy.jsonl"),
+    )
+
+    with pytest.raises(OOMRiskError) as exc_info:
+        supervisor.run_training_job(cfg)
+    assert "predicted peak VRAM" in str(exc_info.value)
+
+
+def test_run_training_job_subprocess_success(tmp_path, llama3_8b_spec, rtx_3060_spec, monkeypatch):
+    supervisor = TrainingSupervisor(work_dir=str(tmp_path))
+
+    cfg = FineTuningJobConfig(
+        job_name="test-subprocess-ok",
+        model=llama3_8b_spec,
+        gpu=rtx_3060_spec,
+        dataset=DatasetConfig(path="dummy.jsonl"),
+    )
+
+    # Mock worker generator to emit mock metric output and succeed
+    def mock_gen_script(config, script_path):
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(
+            'import json, sys\n'
+            'print("[METRIC] " + json.dumps({"step": 1, "loss": 2.15, "learning_rate": 0.0001, "vram_used_mb": 4500.0}))\n'
+            'print("[METRIC] " + json.dumps({"step": 2, "loss": 1.85, "learning_rate": 0.0001, "vram_used_mb": 4600.0}))\n'
+            'sys.exit(0)\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(supervisor, "generate_worker_script", mock_gen_script)
+
+    state = supervisor.run_training_job(cfg, max_steps=2)
+    assert state.status == JobStatus.COMPLETED
+    assert state.current_step == 2
+    assert state.latest_loss == 1.85
+    assert state.peak_vram_recorded_mb == 4600.0
+
+
+def test_run_training_job_watchdog_abort(tmp_path, llama3_8b_spec, rtx_3060_spec, monkeypatch):
+    supervisor = TrainingSupervisor(work_dir=str(tmp_path))
+
+    cfg = FineTuningJobConfig(
+        job_name="test-subprocess-watchdog",
+        model=llama3_8b_spec,
+        gpu=rtx_3060_spec,
+        dataset=DatasetConfig(path="dummy.jsonl"),
+    )
+
+    # Emit metric with VRAM exceeding GPU budget (12,288 MB limit -> emit 12,200 MB)
+    def mock_gen_script(config, script_path):
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(
+            'import json, sys, time\n'
+            'print("[METRIC] " + json.dumps({"step": 1, "loss": 2.5, "vram_used_mb": 12100.0}), flush=True)\n'
+            'time.sleep(2)\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(supervisor, "generate_worker_script", mock_gen_script)
+
+    state = supervisor.run_training_job(cfg, max_steps=10)
+    assert state.status == JobStatus.OOM_ABORTED
+    assert "MemoryWatchdog" in state.error_message
+
+
+def test_run_training_job_subprocess_failure(tmp_path, llama3_8b_spec, rtx_3060_spec, monkeypatch):
+    supervisor = TrainingSupervisor(work_dir=str(tmp_path))
+
+    cfg = FineTuningJobConfig(
+        job_name="test-subprocess-fail",
+        model=llama3_8b_spec,
+        gpu=rtx_3060_spec,
+        dataset=DatasetConfig(path="dummy.jsonl"),
+    )
+
+    def mock_gen_script(config, script_path):
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(
+            'import sys\n'
+            'print("Fatal CUDA error: out of memory", file=sys.stderr)\n'
+            'sys.exit(1)\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(supervisor, "generate_worker_script", mock_gen_script)
+
+    state = supervisor.run_training_job(cfg, max_steps=5)
+    assert state.status == JobStatus.FAILED
+    assert "Fatal CUDA error" in state.error_message
+

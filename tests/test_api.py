@@ -158,3 +158,30 @@ def test_api_websocket_telemetry():
     with client.websocket_connect("/ws/telemetry") as websocket:
         assert websocket is not None
 
+
+def test_api_jobs_launch_options():
+    payload_dry = {
+        "job_name": "api-dry-test",
+        "model_name": "meta-llama/Llama-3.1-8B-Instruct",
+        "gpu_name": "rtx-3060-12gb",
+        "total_steps": 2,
+        "dry_run": True,
+        "dataset_path": "custom_train.jsonl",
+        "dataset_format": "alpaca",
+    }
+    res_dry = client.post("/api/jobs", json=payload_dry)
+    assert res_dry.status_code == 200
+    assert res_dry.json()["job_id"] is not None
+
+    payload_bare = {
+        "job_name": "api-bare-test",
+        "model_name": "meta-llama/Llama-3.1-8B-Instruct",
+        "gpu_name": "rtx-3060-12gb",
+        "total_steps": 2,
+        "dry_run": False,
+    }
+    res_bare = client.post("/api/jobs", json=payload_bare)
+    assert res_bare.status_code == 200
+    assert res_bare.json()["job_id"] is not None
+
+

@@ -40,7 +40,7 @@ from loraforge.data.cleaner import DatasetCleaner
 from loraforge.export.cloud import CloudDeploymentGenerator
 from loraforge.export.inferops import InferOpsExporter
 from loraforge.export.merger import AdapterMerger, MergeMethod, MultiLoraMergeConfig, MultiLoraMergeReport
-from loraforge.supervisor.runner import JobState, TrainingSupervisor
+from loraforge.supervisor.runner import JobState, JobStatus, TrainingSupervisor
 from loraforge.supervisor.telemetry import StepMetrics
 from loraforge.vram.calculator import VRAMCalculator, VRAMEstimateReport
 from loraforge.vram.optimizer import HyperparameterOptimizer, OptimizationRecommendation
@@ -72,6 +72,8 @@ class LaunchJobRequest(BaseModel):
     job_name: str = "my-qlora-experiment"
     model_name: str = "meta-llama/Llama-3.1-8B-Instruct"
     gpu_name: str = "rtx-3060-12gb"
+    dataset_path: str = "train.jsonl"
+    dataset_format: str = "sharegpt"
     seq_len: int = 2048
     batch_size: int = 1
     grad_acc: int = 8
@@ -79,6 +81,7 @@ class LaunchJobRequest(BaseModel):
     quant: str = "nf4"
     optimizer: str = "paged_adamw_8bit"
     total_steps: int = 50
+    dry_run: bool = False
 
 
 class ExportInferOpsRequest(BaseModel):
@@ -265,25 +268,34 @@ def create_app() -> FastAPI:
                 per_device_train_batch_size=req.batch_size,
                 gradient_accumulation_steps=req.grad_acc,
                 max_seq_length=req.seq_len,
+                max_steps=req.total_steps,
                 optimizer=OptimizerType(req.optimizer),
             ),
             gpu=gpu_spec,
-            dataset=DatasetConfig(path="dataset.jsonl", format=DatasetFormat.SHAREGPT),
+            dataset=DatasetConfig(path=req.dataset_path, format=DatasetFormat(req.dataset_format)),
         )
 
         # Launch in background thread to avoid blocking FastAPI event loop
         loop = asyncio.get_event_loop()
-        future = loop.run_in_executor(
-            None,
-            supervisor.run_dry_run_simulation,
-            cfg,
-            req.total_steps,
-            0.05,
-        )
+        if req.dry_run:
+            future = loop.run_in_executor(
+                None,
+                supervisor.run_dry_run_simulation,
+                cfg,
+                req.total_steps,
+                0.05,
+            )
+        else:
+            future = loop.run_in_executor(
+                None,
+                supervisor.run_training_job,
+                cfg,
+                req.total_steps,
+            )
         await asyncio.sleep(0.05)
         job = supervisor.get_job(cfg.job_id)
         if not job:
-            job = JobState(job_id=cfg.job_id, status="pending", total_steps=req.total_steps)
+            job = JobState(job_id=cfg.job_id, status=JobStatus.PENDING, total_steps=req.total_steps)
         return job
 
     @app.post("/api/jobs/{job_id}/cancel")
